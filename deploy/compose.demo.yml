@@ -103,6 +103,16 @@ services:
       minio:
         condition: service_healthy
 
+  ai-service:
+    <<: *defaults
+    build:
+      context: ../../ai-service
+    environment:
+      APP_ENV: production
+      BACKEND_BASE_URL: http://backend:8080
+    depends_on:
+      - backend
+
   frontend:
     <<: *defaults
     build:
@@ -111,8 +121,10 @@ services:
         NEXT_PUBLIC_API_BASE_URL: https://${APP_DOMAIN:?Set APP_DOMAIN}
     environment:
       API_BASE_URL: http://backend:8080
+      AI_SERVICE_URL: http://ai-service:8001
     depends_on:
       - backend
+      - ai-service
 
   # Deliberately opt-in: complete the seed-account lock step before exposing the app.
   caddy:
