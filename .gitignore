@@ -31,6 +31,11 @@ Thumbs.db
 # Docker local
 *.pid
 
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
 # Legacy monorepo working directories are intentionally excluded from infra.
 /ticketing/
 /web/

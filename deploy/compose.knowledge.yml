@@ -1,0 +1,59 @@
+services:
+  ai-service:
+    networks: [default, knowledge-api]
+
+  knowledge-db:
+    profiles: [knowledge]
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: knowledge
+      POSTGRES_USER: knowledge_bootstrap
+      POSTGRES_PASSWORD: ${KNOWLEDGE_BOOTSTRAP_PASSWORD:?Set KNOWLEDGE_BOOTSTRAP_PASSWORD}
+      KNOWLEDGE_READER_PASSWORD: ${KNOWLEDGE_READER_PASSWORD:?Set KNOWLEDGE_READER_PASSWORD}
+      KNOWLEDGE_INGESTER_PASSWORD: ${KNOWLEDGE_INGESTER_PASSWORD:?Set KNOWLEDGE_INGESTER_PASSWORD}
+    volumes:
+      - knowledge-data:/var/lib/postgresql/data
+      - ../services/knowledge/schema.sql:/opt/knowledge/schema.sql:ro
+      - ../services/knowledge/init.sh:/docker-entrypoint-initdb.d/10-knowledge.sh:ro
+    networks: [knowledge-data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U knowledge_bootstrap -d knowledge"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  knowledge-reader:
+    profiles: [knowledge]
+    build:
+      context: ../services/knowledge
+      additional_contexts:
+        ai-source: ../../ai-service
+    environment:
+      PGHOST: knowledge-db
+      PGDATABASE: knowledge
+      PGUSER: knowledge_reader
+      PGPASSWORD: ${KNOWLEDGE_READER_PASSWORD:?Set KNOWLEDGE_READER_PASSWORD}
+      KNOWLEDGE_SERVICE_TOKEN: ${KNOWLEDGE_SERVICE_TOKEN:?Set KNOWLEDGE_SERVICE_TOKEN}
+      CATALOG_SHA256: ${KNOWLEDGE_CATALOG_SHA256:?Set KNOWLEDGE_CATALOG_SHA256}
+      RELEASE_SHA256: ${KNOWLEDGE_RELEASE_SHA256:?Set KNOWLEDGE_RELEASE_SHA256}
+      RETRIEVAL_MODE: ${RETRIEVAL_MODE:-bm25}
+      EMBEDDING_PROFILE_PATH: /models/profile.json
+      EMBEDDING_PROFILE_SHA256: ${EMBEDDING_PROFILE_SHA256:-}
+      RETRIEVAL_EVALUATION_PATH: /models/retrieval-evaluation.json
+      RETRIEVAL_EVALUATION_SHA256: ${RETRIEVAL_EVALUATION_SHA256:-}
+    volumes:
+      - ${KNOWLEDGE_MODEL_DIR:?Set KNOWLEDGE_MODEL_DIR}:/models:ro
+    networks: [knowledge-api, knowledge-data]
+    depends_on:
+      knowledge-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+networks:
+  knowledge-api:
+    internal: true
+  knowledge-data:
+    internal: true
+volumes:
+  knowledge-data:

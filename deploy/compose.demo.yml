@@ -110,6 +110,15 @@ services:
     environment:
       APP_ENV: production
       BACKEND_BASE_URL: http://backend:8080
+      NLU_BACKEND: ${NLU_BACKEND:-rule}
+      RAG_BACKEND: ${RAG_BACKEND:-extractive}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      OLLAMA_NLU_MODEL: ${OLLAMA_NLU_MODEL:-smartevent-nlu:1.5b}
+      OLLAMA_RAG_MODEL: ${OLLAMA_RAG_MODEL:-smartevent-rag:3b}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-10}
+      POLICY_BACKEND: ${POLICY_BACKEND:-artifact}
+      KNOWLEDGE_BASE_URL: http://knowledge-reader:8010
+      KNOWLEDGE_SERVICE_TOKEN: ${KNOWLEDGE_SERVICE_TOKEN:-}
     depends_on:
       - backend
 
@@ -151,3 +160,6 @@ volumes:
   minio-data:
   caddy-data:
   caddy-config:
+
+# Optional knowledge services are defined in compose.knowledge.yml.
+# Add -f compose.knowledge.yml --profile knowledge; defaults do not enable business tools.
