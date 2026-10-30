@@ -19,6 +19,7 @@ def connect(writer=False):
     try:
         with psycopg.connect(
             host=os.environ["PGHOST"],
+            port=int(os.environ.get(prefix + "PGPORT", os.environ.get("PGPORT", 5432))),
             dbname=os.environ["PGDATABASE"],
             user=os.environ[prefix + "PGUSER"],
             password=os.environ[prefix + "PGPASSWORD"],

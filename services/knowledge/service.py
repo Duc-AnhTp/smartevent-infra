@@ -1,6 +1,7 @@
 """Fixed read-only policy endpoint. Ingest is a separate CLI, never an HTTP route."""
 
 import json
+import logging
 import os
 import secrets
 from dataclasses import asdict
@@ -15,6 +16,8 @@ from smartevent_ai.application.retrieve_policy import RetrievePolicy
 from smartevent_ai.infrastructure.knowledge_config import SystemClock
 from smartevent_ai.domain.knowledge import KnowledgeError, digest, fingerprint
 from storage import DatabaseArtifacts, connect, embeddings
+
+logger = logging.getLogger("knowledge.service")
 
 app = FastAPI(
     title="SmartEvent approved knowledge reader", docs_url=None, redoc_url=None
@@ -63,18 +66,36 @@ class HybridRetriever:
             raise KnowledgeError("Unknown dense failure policy")
         try:
             result = self._dense_rank(query, chunks, limit, lexical, mode)
-        except (KnowledgeError, OSError, ValueError, KeyError, TypeError):
+        except (KnowledgeError, OSError, ValueError, KeyError, TypeError) as exc:
             if failure_policy != "bm25":
+                logger.error("Dense retrieval failed under fail_closed policy: %s", exc)
                 raise KnowledgeError("Approved dense retrieval unavailable") from None
             self.effective_mode = "degraded_bm25"
             self.fallback_reason = "DENSE_UNAVAILABLE"
+            logger.warning(
+                "Dense retrieval unavailable (%s); degraded to bm25 fallback",
+                exc,
+            )
             return lexical[:limit]
         self.effective_mode = mode
         return result
 
     def _dense_rank(self, query, chunks, limit, lexical, mode):
         # A pinned evaluation record is required before dense serving is selected.
-        raw = Path(os.environ["RETRIEVAL_EVALUATION_PATH"]).read_bytes()
+        eval_path_str = os.environ.get("RETRIEVAL_EVALUATION_PATH")
+        if not eval_path_str:
+            logger.warning(
+                "RETRIEVAL_EVALUATION_PATH is not configured; dense retrieval disabled"
+            )
+            raise KnowledgeError("Retrieval evaluation path not configured")
+        eval_path = Path(eval_path_str)
+        if not eval_path.is_file():
+            logger.warning(
+                "Retrieval evaluation file not found at %s; operating in degraded mode",
+                eval_path,
+            )
+            raise KnowledgeError(f"Retrieval evaluation file not found: {eval_path}")
+        raw = eval_path.read_bytes()
         record = json.loads(raw)
         if not isinstance(record, dict):
             raise KnowledgeError("Invalid retrieval evaluation record")
@@ -94,7 +115,7 @@ class HybridRetriever:
         if not allowed:
             return ()
         threshold = record.get("minimum_similarity")
-        if type(threshold) not in (int, float) or not 0 <= threshold <= 1:
+        if not isinstance(threshold, (int, float)) or not (0 <= threshold <= 1):
             raise KnowledgeError("A calibrated abstention threshold is required")
         with connect() as connection:
             connection.execute("SET LOCAL statement_timeout = '2500ms'")
@@ -136,6 +157,12 @@ def ready():
             # Validate the exact release/profile/evaluation and perform inference
             # before advertising a dense reader as ready.
             retriever.rank("kiểm tra truy xuất", chunks, 1)
+        if retriever.fallback_reason:
+            logger.warning(
+                "Knowledge reader ready in degraded status: mode=%s, fallback_reason=%s",
+                retriever.effective_mode,
+                retriever.fallback_reason,
+            )
         return {
             "status": "degraded" if retriever.fallback_reason else "ready",
             "release_id": snapshot.release_id,
@@ -145,7 +172,8 @@ def ready():
             "embedding_profile": artifacts.embedding_profile,
             "dense_serving_verified": retriever.effective_mode in ("vector", "hybrid"),
         }
-    except Exception:
+    except Exception as exc:
+        logger.error("Knowledge service readiness check failed: %s", exc)
         raise HTTPException(503, "Knowledge unavailable") from None
 
 
@@ -163,6 +191,12 @@ def policy(
         result = asdict(answer)
         if retriever.fallback_reason:
             result["mode"] = "degraded_bm25"
+            logger.warning(
+                "Policy served in degraded status: mode=%s, fallback_reason=%s",
+                result["mode"],
+                retriever.fallback_reason,
+            )
         return result
-    except Exception:
+    except Exception as exc:
+        logger.error("Knowledge policy request failed: %s", exc)
         raise HTTPException(503, "Knowledge unavailable") from None
