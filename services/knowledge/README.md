@@ -26,6 +26,30 @@ Set POLICY_BACKEND=http and fixed KNOWLEDGE_BASE_URL plus the server token. AI-s
 
 ## Operations
 
+Bootstrap now runs in one transaction and `knowledge_active.index_id` references
+`knowledge_releases.index_id`. Database health checks validate all three tables
+and the FK, rather than only testing whether PostgreSQL accepts connections.
+
+For an older partially initialized **knowledge database**, take a backup first,
+then run `migrations/000_repair_roles.sql` as its owner using psql with
+`ON_ERROR_STOP=1`, `reader_password` and `ingester_password` variables from the
+knowledge deployment credentials. This creates missing roles without changing
+existing passwords. Next run `psql -v ON_ERROR_STOP=1 -f migrations/001_active_index.sql`.
+The migration preserves existing releases/vectors and rejects unmapped legacy
+pointer values. If no release table exists, use the corrected bootstrap on that
+empty knowledge database. Restarting an existing Docker volume does not rerun init.
+Do not remove business database volumes to repair knowledge initialization.
+
+`DENSE_FAILURE_POLICY=fail_closed` is the default: missing/mismatched evaluation
+or unavailable dense inference returns 503. Explicit `bm25` permits lexical
+fallback and reports `degraded_bm25`, with `dense_serving_verified=false` in health.
+Neither policy permits running an unapproved dense model. AI preserves the
+degraded response mode. Restore normal mode only with matching evaluation evidence.
+
+The knowledge CI uses a disposable `knowledge_test` PostgreSQL/pgvector database,
+tests the canonical DDL, legacy pointer migration, FK rejection and reader privileges.
+Those storage fixtures are not approved serving corpora or model quality evidence.
+
 Back up only the knowledge database with pg_dump using an operator account; restore to a separate knowledge database, verify artifact/profile hashes and reader privileges, then point the reader to it. No commands remove business volumes. Roll back by switching knowledge_active to an existing index_id transactionally and deploy its matching catalog/release trust anchors. Revoke/expire a source through a newly reviewed catalog publication; mismatched or stale anchors fail closed rather than serving cached evidence. Do not extend approvals just to make readiness pass.
 
 Cold-start readiness, query-only privileges, expiry/revocation, restart/restore and real vector recall require PostgreSQL/Docker integration. The compose profile alone is not evidence these checks passed. The service driver is version-pinned; a platform-specific hash lock and image digest pin remain release prerequisites.

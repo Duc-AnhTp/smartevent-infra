@@ -1,0 +1,58 @@
+name: Knowledge contracts
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  postgres:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      database:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: knowledge_test
+          POSTGRES_PASSWORD: TEST_ONLY_BOOTSTRAP_PASSWORD
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d knowledge_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    defaults:
+      run:
+        working-directory: smartevent-infra
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: "5433"
+      PGUSER: postgres
+      PGDATABASE: knowledge_test
+      PGPASSWORD: TEST_ONLY_BOOTSTRAP_PASSWORD
+      KNOWLEDGE_TEST_HOST: 127.0.0.1
+      KNOWLEDGE_TEST_PORT: "5433"
+      KNOWLEDGE_TEST_DATABASE: knowledge_test
+      KNOWLEDGE_TEST_READER_PASSWORD: TEST_ONLY_READER_PASSWORD
+      KNOWLEDGE_TEST_ADMIN_DSN: postgresql://postgres:TEST_ONLY_BOOTSTRAP_PASSWORD@127.0.0.1:5433/knowledge_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: smartevent-infra
+      - uses: actions/checkout@v4
+        with:
+          repository: smartevent-ticketing/ai-service
+          path: ai-service
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install --require-hashes -r ../ai-service/requirements/dev.lock
+          python -m pip install -r services/knowledge/requirements.txt
+      - name: Bootstrap real schema and verify foreign key
+        run: |
+          psql -v ON_ERROR_STOP=1 -v reader_password=TEST_ONLY_READER_PASSWORD -v ingester_password=TEST_ONLY_INGESTER_PASSWORD -f services/knowledge/schema.sql
+          psql -v ON_ERROR_STOP=1 -f services/knowledge/check-schema.sql
+      - name: Unit, migration, vector and query-only tests
+        run: python -m pytest -q services/knowledge/tests
+      - name: Verify post-migration schema
+        run: psql -v ON_ERROR_STOP=1 -f services/knowledge/check-schema.sql

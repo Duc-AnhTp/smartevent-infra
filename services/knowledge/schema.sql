@@ -1,3 +1,4 @@
+BEGIN;
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE knowledge_releases (
   index_id text PRIMARY KEY,
@@ -19,7 +20,7 @@ CREATE TABLE knowledge_chunks (
 );
 CREATE TABLE knowledge_active (
   singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
-  release_id text NOT NULL REFERENCES knowledge_releases(release_id)
+  index_id text NOT NULL REFERENCES knowledge_releases(index_id)
 );
 -- Exact vector search first: no approximate index before recall/latency evaluation.
 CREATE ROLE knowledge_reader LOGIN PASSWORD :'reader_password';
@@ -28,3 +29,4 @@ GRANT USAGE ON SCHEMA public TO knowledge_reader, knowledge_ingester;
 GRANT SELECT ON knowledge_releases, knowledge_chunks, knowledge_active TO knowledge_reader;
 ALTER ROLE knowledge_reader SET default_transaction_read_only = on;
 GRANT SELECT, INSERT, UPDATE ON knowledge_releases, knowledge_chunks, knowledge_active TO knowledge_ingester;
+COMMIT;

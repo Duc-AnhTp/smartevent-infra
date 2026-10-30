@@ -47,17 +47,37 @@ def fuse(rankings):
 class HybridRetriever:
     def __init__(self, artifacts):
         self.artifacts = artifacts
+        self.effective_mode = os.environ.get("RETRIEVAL_MODE", "bm25")
+        self.fallback_reason = None
 
     def rank(self, query, chunks, limit):
         lexical = BM25Retriever().rank(query, chunks, max(limit, 5))
         mode = os.environ.get("RETRIEVAL_MODE", "bm25")
+        self.effective_mode, self.fallback_reason = mode, None
         if mode == "bm25":
             return lexical[:limit]
         if mode not in ("vector", "hybrid"):
             raise KnowledgeError("Unknown retrieval mode")
+        failure_policy = os.environ.get("DENSE_FAILURE_POLICY", "fail_closed")
+        if failure_policy not in ("fail_closed", "bm25"):
+            raise KnowledgeError("Unknown dense failure policy")
+        try:
+            result = self._dense_rank(query, chunks, limit, lexical, mode)
+        except (KnowledgeError, OSError, ValueError, KeyError, TypeError):
+            if failure_policy != "bm25":
+                raise KnowledgeError("Approved dense retrieval unavailable") from None
+            self.effective_mode = "degraded_bm25"
+            self.fallback_reason = "DENSE_UNAVAILABLE"
+            return lexical[:limit]
+        self.effective_mode = mode
+        return result
+
+    def _dense_rank(self, query, chunks, limit, lexical, mode):
         # A pinned evaluation record is required before dense serving is selected.
         raw = Path(os.environ["RETRIEVAL_EVALUATION_PATH"]).read_bytes()
         record = json.loads(raw)
+        if not isinstance(record, dict):
+            raise KnowledgeError("Invalid retrieval evaluation record")
         if (
             digest(raw) != os.environ["RETRIEVAL_EVALUATION_SHA256"]
             or record.get("status") != "PASS"
@@ -74,7 +94,7 @@ class HybridRetriever:
         if not allowed:
             return ()
         threshold = record.get("minimum_similarity")
-        if not isinstance(threshold, (int, float)) or not 0 <= threshold <= 1:
+        if type(threshold) not in (int, float) or not 0 <= threshold <= 1:
             raise KnowledgeError("A calibrated abstention threshold is required")
         with connect() as connection:
             connection.execute("SET LOCAL statement_timeout = '2500ms'")
@@ -106,20 +126,24 @@ def ready():
         store = ArtifactKnowledgeStore(artifacts)
         snapshot = store.snapshot(SystemClock().now())
         mode = os.environ.get("RETRIEVAL_MODE", "bm25")
+        retriever = HybridRetriever(artifacts)
+        from smartevent_ai.domain.knowledge import eligible_chunks
+
+        chunks = eligible_chunks(snapshot, SystemClock().now())
+        if not chunks:
+            raise KnowledgeError("No eligible knowledge chunks")
         if mode != "bm25":
             # Validate the exact release/profile/evaluation and perform inference
             # before advertising a dense reader as ready.
-            from smartevent_ai.domain.knowledge import eligible_chunks
-
-            HybridRetriever(artifacts).rank(
-                "kiểm tra truy xuất", eligible_chunks(snapshot, SystemClock().now()), 1
-            )
+            retriever.rank("kiểm tra truy xuất", chunks, 1)
         return {
-            "status": "ready",
+            "status": "degraded" if retriever.fallback_reason else "ready",
             "release_id": snapshot.release_id,
-            "mode": os.environ.get("RETRIEVAL_MODE", "bm25"),
+            "mode": retriever.effective_mode,
+            "configured_mode": mode,
+            "fallback_reason": retriever.fallback_reason,
             "embedding_profile": artifacts.embedding_profile,
-            "dense_serving_verified": mode != "bm25",
+            "dense_serving_verified": retriever.effective_mode in ("vector", "hybrid"),
         }
     except Exception:
         raise HTTPException(503, "Knowledge unavailable") from None
@@ -134,9 +158,11 @@ def policy(
     try:
         artifacts = DatabaseArtifacts()
         store = ArtifactKnowledgeStore(artifacts)
-        answer = RetrievePolicy(
-            store, HybridRetriever(artifacts), SystemClock()
-        ).answer(query)
-        return asdict(answer)
+        retriever = HybridRetriever(artifacts)
+        answer = RetrievePolicy(store, retriever, SystemClock()).answer(query)
+        result = asdict(answer)
+        if retriever.fallback_reason:
+            result["mode"] = "degraded_bm25"
+        return result
     except Exception:
         raise HTTPException(503, "Knowledge unavailable") from None

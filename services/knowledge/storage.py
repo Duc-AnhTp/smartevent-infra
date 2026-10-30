@@ -3,7 +3,7 @@
 import os
 from pathlib import Path
 import json
-import psycopg
+from contextlib import contextmanager
 from smartevent_ai.adapters.outbound.knowledge.embedding_adapter import (
     LocalOnnxEmbeddings,
 )
@@ -11,17 +11,23 @@ from smartevent_ai.adapters.outbound.knowledge.tokenizer import LocalTokenizer
 from smartevent_ai.domain.knowledge import digest, KnowledgeError
 
 
+@contextmanager
 def connect(writer=False):
+    import psycopg
+
     prefix = "INGEST_" if writer else ""
-    connection = psycopg.connect(
-        host=os.environ["PGHOST"],
-        dbname=os.environ["PGDATABASE"],
-        user=os.environ[prefix + "PGUSER"],
-        password=os.environ[prefix + "PGPASSWORD"],
-        connect_timeout=3,
-    )
-    connection.read_only = not writer
-    return connection
+    try:
+        with psycopg.connect(
+            host=os.environ["PGHOST"],
+            dbname=os.environ["PGDATABASE"],
+            user=os.environ[prefix + "PGUSER"],
+            password=os.environ[prefix + "PGPASSWORD"],
+            connect_timeout=3,
+        ) as connection:
+            connection.read_only = not writer
+            yield connection
+    except psycopg.Error as exc:
+        raise KnowledgeError("Knowledge database unavailable") from exc
 
 
 def embeddings():
